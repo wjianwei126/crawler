@@ -8,6 +8,7 @@ from socket import inet_ntoa
 from threading import Thread
 from collections import deque
 from bencode import bencode, bdecode
+import time
 
 BOOTSTRAP_NODES = (
     ("router.bittorrent.com", 6881),
@@ -36,6 +37,7 @@ class DHTClient(Thread):
         self.nodes = deque(maxlen=max_node_qsize)
         self.ips = set()
         self._pool_client = eventlet.GreenPool()
+        self.message_queue = deque()
 
     @staticmethod
     def random_chrs(length):
@@ -61,7 +63,7 @@ class DHTClient(Thread):
         return n
 
     def send_krpc(self, msg, address):
-        self.ufd.sendto(bencode(msg), address)
+        self.message_queue.append((msg, address))
 
     def send_find_node(self, address, nid=None):
         nid = self.get_neighbor(nid, self.nid) if nid else self.nid
@@ -90,9 +92,9 @@ class DHTClient(Thread):
         while True:
             try:
                 node = self.nodes.popleft()
-                self._pool_client.spawn_n(self.send_find_node, (node.ip, node.port), node.nid)
+                self.send_find_node((node.ip, node.port), node.nid)
             except IndexError:
-                self._pool_client.spawn_n(self.re_join_DHT)
+                self.re_join_DHT()
             except Exception as e:
                 print 'auto_send_find_node', e
             sleep(wait)
@@ -131,6 +133,20 @@ class DHTServer(DHTClient):
         self.ufd.bind((self.bind_ip, self.bind_port))
         self._pool_server = eventlet.GreenPool()
 
+        st = Thread(target=self.send, args=(self.ufd, self.message_queue))
+        st.setDaemon(True)
+        st.start()
+
+    @staticmethod
+    def send(sock, message_queue):
+        pool = eventlet.GreenPool()
+        while True:
+            if len(message_queue) == 0:
+                sleep(1)
+            else:
+                msg, addr = message_queue.popleft()
+                pool.spawn_n(sock.sendto, bencode(msg), addr)
+
     def run(self):
         self.re_join_DHT()
         while True:
@@ -139,7 +155,7 @@ class DHTServer(DHTClient):
                 if p and len(p) == 2:
                     data, address = p
                     msg = bdecode(data)
-                    self._pool_server.spawn_n(self.on_message, msg, address)
+                    self.on_message(msg, address)
             except Exception as e:
                 print 'DHTServer run', e
 
