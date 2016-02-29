@@ -4,7 +4,7 @@
 from dht import DHTServer
 from bt_metadata import download_metadata
 
-from eventlet import queue, GreenPool
+from eventlet import queue, GreenPool, sleep
 from Queue import Queue
 from threading import Thread
 
@@ -24,12 +24,13 @@ class Master(Thread):
             if infohash in downloaded:
                 continue
             self._pool.spawn_n(download_metadata, address, infohash, self.metadata_queue)
+            sleep(1)
             while not self.metadata_queue.empty():
                 infohash, address, metadata = self.metadata_queue.get()
-                if len(metadata) > 0:
+                if metadata and len(metadata) > 0:
                     downloaded.add(infohash)
                     print 'Total metadata downloaded:', len(downloaded)
-                    with open('../torrent/'+infohash, 'w') as f:
+                    with open('../torrent/'+infohash.encode('hex'), 'w') as f:
                         f.write(metadata)
 
     def log(self, infohash, address=None):
@@ -40,8 +41,9 @@ class Master(Thread):
 # using example
 if __name__ == "__main__":
 
-    #print namespace.host, namespace.port
+    # print namespace.host, namespace.port
     # max_node_qsize bigger, bandwith bigger, speed higher
+
     master = Master()
     master.start()
     dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=200)

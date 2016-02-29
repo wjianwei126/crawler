@@ -91,7 +91,7 @@ def recvall(the_socket, timeout=5):
             pass
     return "".join(total_data)
 
-def download_metadata(address, infohash, metadata_queue, downloaded, timeout=5):
+def download_metadata(address, infohash, metadata_queue, timeout=5):
     metadata = None
     start_time = time()
     try:
@@ -107,7 +107,7 @@ def download_metadata(address, infohash, metadata_queue, downloaded, timeout=5):
 
         # handshake error
         if not check_handshake(packet, infohash):
-            return
+            raise Exception()
 
         # ext handshake
         send_ext_handshake(the_socket)

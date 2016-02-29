@@ -1,11 +1,11 @@
 import eventlet
 from eventlet.green import socket
+from eventlet import sleep
 
 from random import randint
 from struct import unpack
 from socket import inet_ntoa
 from threading import Thread
-from time import sleep
 from collections import deque
 from bencode import bencode, bdecode
 
@@ -92,7 +92,7 @@ class DHTClient(Thread):
                 node = self.nodes.popleft()
                 self._pool_client.spawn_n(self.send_find_node, (node.ip, node.port), node.nid)
             except IndexError:
-                self.re_join_DHT()
+                self._pool_client.spawn_n(self.re_join_DHT)
             except Exception as e:
                 print 'auto_send_find_node', e
             sleep(wait)
@@ -135,9 +135,11 @@ class DHTServer(DHTClient):
         self.re_join_DHT()
         while True:
             try:
-                (data, address) = self.ufd.recvfrom(65536)
-                msg = bdecode(data)
-                self._pool_server.spawn_n(self.on_message, msg, address)
+                p = self.ufd.recvfrom(65536)
+                if p and len(p) == 2:
+                    data, address = p
+                    msg = bdecode(data)
+                    self._pool_server.spawn_n(self.on_message, msg, address)
             except Exception as e:
                 print 'DHTServer run', e
 
