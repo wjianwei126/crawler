@@ -27,11 +27,9 @@ class KNode(object):
         self.port = port
 
 
-class DHTClient(Thread):
+class DHTClient(object):
 
     def __init__(self, max_node_qsize):
-        Thread.__init__(self)
-        self.setDaemon(True)
         self.max_node_qsize = max_node_qsize
         self.nid = self.random_chrs(20)
         self.nodes = deque(maxlen=max_node_qsize)

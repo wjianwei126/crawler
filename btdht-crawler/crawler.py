@@ -5,18 +5,15 @@ from dht import DHTServer
 from bt_metadata import download_metadata
 
 from eventlet import queue, GreenPool, sleep
-from Queue import Queue
-from threading import Thread
+
 import json
 from bencode import bdecode
 
-class Master(Thread):
+class Master(object):
 
     def __init__(self):
-        Thread.__init__(self)
-        self.setDaemon(True)
         self.metadata_queue = queue.LightQueue()
-        self.infohash_queue = Queue()
+        self.infohash_queue = queue.LightQueue()
         self._pool = GreenPool()
         self.downloaded = set()
 
@@ -47,10 +44,15 @@ if __name__ == "__main__":
 
     # print namespace.host, namespace.port
     # max_node_qsize bigger, bandwith bigger, speed higher
+    pool = GreenPool()
 
     master = Master()
-    master.start()
+    pool.spawn_n(master.run)
     dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=200)
-    dht.start()
-    dht.join()
-    master.join()
+    pool.spawn_n(dht.run)
+    try:
+        pool.waitall()
+    except KeyboardInterrupt:
+        exit(0)
+
+
