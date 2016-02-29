@@ -7,6 +7,8 @@ from bt_metadata import download_metadata
 from eventlet import queue, GreenPool, sleep
 from Queue import Queue
 from threading import Thread
+import json
+from bencode import bdecode
 
 class Master(Thread):
 
@@ -16,22 +18,24 @@ class Master(Thread):
         self.metadata_queue = queue.LightQueue()
         self.infohash_queue = Queue()
         self._pool = GreenPool()
+        self.downloaded = set()
+
+    def get_torrent(self):
+        while True:
+            infohash, address, metadata = self.metadata_queue.get()
+            if metadata and len(metadata) > 0:
+                self.downloaded.add(infohash)
+                with open('../torrent/'+infohash.encode('hex'), 'w') as f:
+                    json.dump(bdecode(metadata), f)
 
     def run(self):
-        downloaded = set()
+        self._pool.spawn_n(self.get_torrent)
         while True:
             infohash, address = self.infohash_queue.get()
-            if infohash in downloaded:
+            if infohash in self.downloaded:
                 continue
             self._pool.spawn_n(download_metadata, address, infohash, self.metadata_queue)
             sleep(1)
-            while not self.metadata_queue.empty():
-                infohash, address, metadata = self.metadata_queue.get()
-                if metadata and len(metadata) > 0:
-                    downloaded.add(infohash)
-                    print 'Total metadata downloaded:', len(downloaded)
-                    with open('../torrent/'+infohash.encode('hex'), 'w') as f:
-                        f.write(metadata)
 
     def log(self, infohash, address=None):
         print(infohash, address)
@@ -48,4 +52,5 @@ if __name__ == "__main__":
     master.start()
     dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=200)
     dht.start()
-    dht.auto_send_find_node()
+    dht.join()
+    master.join()

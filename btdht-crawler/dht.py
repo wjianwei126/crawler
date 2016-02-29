@@ -36,8 +36,9 @@ class DHTClient(Thread):
         self.nid = self.random_chrs(20)
         self.nodes = deque(maxlen=max_node_qsize)
         self.ips = set()
-        self._pool_client = eventlet.GreenPool()
         self.message_queue = deque()
+        self.ufd = None
+        self._pool_client = eventlet.GreenPool()
 
     @staticmethod
     def random_chrs(length):
@@ -63,7 +64,7 @@ class DHTClient(Thread):
         return n
 
     def send_krpc(self, msg, address):
-        self.message_queue.append((msg, address))
+        self.ufd.sendto(bencode(msg), address)
 
     def send_find_node(self, address, nid=None):
         nid = self.get_neighbor(nid, self.nid) if nid else self.nid
@@ -92,9 +93,9 @@ class DHTClient(Thread):
         while True:
             try:
                 node = self.nodes.popleft()
-                self.send_find_node((node.ip, node.port), node.nid)
+                self._pool_client.spawn_n(self.send_find_node, (node.ip, node.port), node.nid)
             except IndexError:
-                self.re_join_DHT()
+                self._pool_client.spawn_n(self.re_join_DHT)
             except Exception as e:
                 print 'auto_send_find_node', e
             sleep(wait)
@@ -133,31 +134,23 @@ class DHTServer(DHTClient):
         self.ufd.bind((self.bind_ip, self.bind_port))
         self._pool_server = eventlet.GreenPool()
 
-        st = Thread(target=self.send, args=(self.ufd, self.message_queue))
-        st.setDaemon(True)
-        st.start()
-
-    @staticmethod
-    def send(sock, message_queue):
-        pool = eventlet.GreenPool()
-        while True:
-            if len(message_queue) == 0:
-                sleep(1)
-            else:
-                msg, addr = message_queue.popleft()
-                pool.spawn_n(sock.sendto, bencode(msg), addr)
-
-    def run(self):
-        self.re_join_DHT()
+    def response(self):
         while True:
             try:
                 p = self.ufd.recvfrom(65536)
                 if p and len(p) == 2:
                     data, address = p
                     msg = bdecode(data)
-                    self.on_message(msg, address)
+                    self._pool_server.spawn_n(self.on_message, msg, address)
             except Exception as e:
                 print 'DHTServer run', e
+
+    def run(self):
+        self.re_join_DHT()
+        self._pool_server.spawn_n(self.auto_send_find_node)
+        self._pool_server.spawn_n(self.response)
+        self._pool_server.waitall()
+
 
     def on_message(self, msg, address):
         try:
