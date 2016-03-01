@@ -33,6 +33,7 @@ class DHTClient(object):
         self.max_node_qsize = max_node_qsize
         self.nid = self.random_chrs(20)
         self.nodes = eventlet.queue.LightQueue(maxsize=max_node_qsize)
+        self.message_queue = eventlet.queue.LifoQueue()
         self.ips = set()
         self.ufd = None
         self._pool_client = eventlet.GreenPool()
@@ -61,7 +62,7 @@ class DHTClient(object):
         return n
 
     def send_krpc(self, msg, address):
-        self.ufd.sendto(bencode(msg), address)
+        self.message_queue.put((msg,address))
 
     def send_find_node(self, address, nid=None):
         nid = self.get_neighbor(nid, self.nid) if nid else self.nid
@@ -90,9 +91,10 @@ class DHTClient(object):
         while True:
             try:
                 node = self.nodes.get(timeout=1)
-                self._pool_client.spawn_n(self.send_find_node, (node.ip, node.port), node.nid)
+                self.send_find_node((node.ip, node.port), node.nid)
             except eventlet.queue.Empty:
-                self._pool_client.spawn_n(self.re_join_DHT)
+                sleep(3)
+                self.re_join_DHT()
             except Exception as e:
                 print 'auto_send_find_node', e
             sleep(wait)
@@ -106,7 +108,7 @@ class DHTClient(object):
             if port < 1 or port > 65535: continue
             n = KNode(nid, ip, port)
             self.nodes.put(n)
-            if len(self.ips) < 100000:
+            if len(self.ips) < 10000:
                 self.ips.add(ip)
                 print len(self.ips), self.nodes.qsize(), ip, port
 
@@ -138,14 +140,21 @@ class DHTServer(DHTClient):
                 if p and len(p) == 2:
                     data, address = p
                     msg = bdecode(data)
-                    self._pool_server.spawn_n(self.on_message, msg, address)
+                    self.on_message(msg, address)
             except Exception as e:
                 print 'DHTServer run', e
+
+    def send_queue(self):
+        while True:
+            msg, addr = self.message_queue.get()
+            self.ufd.sendto(bencode(msg), addr)
 
     def run(self):
         self.re_join_DHT()
         self._pool_server.spawn_n(self.auto_send_find_node)
         self._pool_server.spawn_n(self.response)
+        self._pool_server.spawn_n(self.send_queue)
+
         self._pool_server.waitall()
 
 

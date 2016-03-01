@@ -92,12 +92,12 @@ def recvall(the_socket, timeout=5):
     return "".join(total_data)
 
 def download_metadata(address, infohash, metadata_queue, timeout=5):
-    metadata = None
+    metadata = []
     start_time = time()
     try:
         the_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        the_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        the_socket.bind(('0.0.0.0', 9000))
+        # the_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # the_socket.bind(('0.0.0.0', 9000))
         the_socket.settimeout(timeout)
         the_socket.connect(address)
 
@@ -118,13 +118,12 @@ def download_metadata(address, infohash, metadata_queue, timeout=5):
         #print 'ut_metadata_size: ', metadata_size
 
         # request each piece of metadata
-        metadata = []
         for piece in range(int(math.ceil(metadata_size/(16.0*1024)))):
             request_metadata(the_socket, ut_metadata, piece)
             packet = recvall(the_socket, timeout) #the_socket.recv(1024*17) #
             metadata.append(packet[packet.index("ee")+2:])
 
-        metadata = "".join(metadata)
+
         #print 'Fetched', bdecode(metadata)["name"], "size: ", len(metadata)
 
     except socket.timeout:
@@ -135,4 +134,5 @@ def download_metadata(address, infohash, metadata_queue, timeout=5):
 
     finally:
         the_socket.close()
+        metadata = "".join(metadata)
         metadata_queue.put((infohash, address, metadata))

@@ -8,12 +8,15 @@ from eventlet import queue, GreenPool, sleep
 
 import json
 from bencode import bdecode
+from threading import Thread
+from Queue import Queue
 
-class Master(object):
+class Master(Thread):
 
     def __init__(self):
+        Thread.__init__(self)
         self.metadata_queue = queue.LightQueue()
-        self.infohash_queue = queue.LightQueue()
+        self.infohash_queue = Queue()
         self._pool = GreenPool()
         self.downloaded = set()
 
@@ -21,9 +24,29 @@ class Master(object):
         while True:
             infohash, address, metadata = self.metadata_queue.get()
             if metadata and len(metadata) > 0:
-                self.downloaded.add(infohash)
-                with open('../torrent/'+infohash.encode('hex'), 'w') as f:
-                    json.dump(bdecode(metadata), f)
+                try:
+                    try:
+                        metadata = metadata[:metadata.index('6:pieces')] + 'e'
+                    except Exception:
+                        pass
+                    d_metadata = bdecode(metadata)
+                    length = ''
+                    if 'name' in d_metadata:
+                        name = d_metadata['name']
+                    if 'utf-8.name' in d_metadata:
+                        name = d_metadata['utf-8.name']
+                    if 'length' in d_metadata:
+                        length = d_metadata['length']
+                    print '\n'
+                    print 'name:', name.decode('utf8')
+                    print 'length:', d_metadata.get('length', '')
+                    print 'files:' , d_metadata.get('files', [])
+                    print 'from: %s:%d' % address
+                    print 'infohash: %s' % infohash.encode('hex')
+                    self.downloaded.add(infohash)
+                except Exception as e:
+                    print e
+                    print 'metadata:', metadata
 
     def run(self):
         self._pool.spawn_n(self.get_torrent)
@@ -35,7 +58,7 @@ class Master(object):
             sleep(1)
 
     def log(self, infohash, address=None):
-        print(infohash, address)
+        # print(infohash, address)
         self.infohash_queue.put((infohash, address))
 
 
@@ -47,7 +70,7 @@ if __name__ == "__main__":
     pool = GreenPool()
 
     master = Master()
-    pool.spawn_n(master.run)
+    master.start()
     dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=4000)
     pool.spawn_n(dht.run)
     try:
