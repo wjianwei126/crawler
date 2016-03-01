@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     master = Master()
     pool.spawn_n(master.run)
-    dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=200)
+    dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=4000)
     pool.spawn_n(dht.run)
     try:
         pool.waitall()

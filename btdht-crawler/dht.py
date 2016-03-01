@@ -32,9 +32,8 @@ class DHTClient(object):
     def __init__(self, max_node_qsize):
         self.max_node_qsize = max_node_qsize
         self.nid = self.random_chrs(20)
-        self.nodes = deque(maxlen=max_node_qsize)
+        self.nodes = eventlet.queue.LightQueue(maxsize=max_node_qsize)
         self.ips = set()
-        self.message_queue = deque()
         self.ufd = None
         self._pool_client = eventlet.GreenPool()
 
@@ -83,16 +82,16 @@ class DHTClient(object):
             self.send_find_node(address)
 
     def re_join_DHT(self):
-        if len(self.nodes) == 0:
+        if self.nodes.empty():
             self.join_DHT()
 
     def auto_send_find_node(self):
         wait = 1.0 / self.max_node_qsize
         while True:
             try:
-                node = self.nodes.popleft()
+                node = self.nodes.get(timeout=1)
                 self._pool_client.spawn_n(self.send_find_node, (node.ip, node.port), node.nid)
-            except IndexError:
+            except eventlet.queue.Empty:
                 self._pool_client.spawn_n(self.re_join_DHT)
             except Exception as e:
                 print 'auto_send_find_node', e
@@ -106,10 +105,10 @@ class DHTClient(object):
             if ip == self.bind_ip: continue
             if port < 1 or port > 65535: continue
             n = KNode(nid, ip, port)
-            self.nodes.append(n)
-            if len(self.ips) < 10000:
+            self.nodes.put(n)
+            if len(self.ips) < 100000:
                 self.ips.add(ip)
-                print len(self.ips), len(self.nodes), ip, port
+                print len(self.ips), self.nodes.qsize(), ip, port
 
 
 class DHTServer(DHTClient):
