@@ -38,7 +38,7 @@ class DHTSpider(Thread):
         self.max_node_qsize = max_node_qsize
         self.nid = self.random_chars(20)
         self.nodes = eventlet.queue.LightQueue(maxsize=max_node_qsize)
-        self.message_queue = eventlet.queue.LightQueue()
+        self.message_queue = eventlet.queue.LightQueue(maxsize=4000)
         self.ips = set()
         self.infohash_queue = Queue()
         self.bind_ip = bind_ip
@@ -69,7 +69,7 @@ class DHTSpider(Thread):
                 self.re_join_dht()
             except Exception as e:
                 logger.error(e)
-        sleep(wait)
+        #sleep(wait)
 
     def send_find_node(self, address, nid=None):
         nid = self.get_neighbor(nid, self.nid) if nid else self.nid
@@ -89,12 +89,21 @@ class DHTSpider(Thread):
         while True:
             try:
                 p = self.ufd.recvfrom(65536)
-                if p and len(p) == 2:
-                    data, address = p
+            except socket.error as e:
+                errno, err_msg = e
+                if errno == 10052:
+                    logger.debug('Network dropped connection on reset(10052) %s:%d' % address)
+                else:
+                    logger.error(err_msg)
+
+            if p and len(p) == 2:
+                data, address = p
+
+                try:
                     msg = bdecode(data)
-                    self.on_message(msg, address)
-            except Exception as e:
-                logger.error(e)
+                except:
+                    pass
+                self.on_message(msg, address)
 
     def send_krpc(self, msg, address):
         self.message_queue.put((bencode(msg), address))
@@ -111,7 +120,6 @@ class DHTSpider(Thread):
             self.send_find_node(address)
 
     def run(self):
-        self.re_join_dht()
         self.pool.spawn_n(self.auto_send_find_node)
         self.pool.spawn_n(self.response)
         self.pool.spawn_n(self.send_message_queue)
@@ -142,7 +150,7 @@ class DHTSpider(Thread):
                 continue
             n = KNode(nid, ip, port)
             self.nodes.put(n)
-            if len(self.ips) < 10000:
+            if logger.level == logging.DEBUG and len(self.ips) < 100000 and ip not in self.ips:
                 self.ips.add(ip)
                 logger.debug('ips: %d, nodes: %d' % (len(self.ips), self.nodes.qsize()))
 

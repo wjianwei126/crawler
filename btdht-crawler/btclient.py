@@ -8,7 +8,7 @@ import math
 from struct import pack
 from time import time
 from random import randint
-from bencode import bencode
+from bencode import bencode, bdecode
 from threading import Thread
 from Queue import  Queue
 
@@ -109,51 +109,6 @@ def recvall(the_socket, timeout=5):
     return "".join(total_data)
 
 
-def download_metadata(address, infohash, metadata_queue, timeout=5):
-    metadata = []
-    start_time = time()
-    try:
-        the_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # the_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # the_socket.bind(('0.0.0.0', 9000))
-        the_socket.settimeout(timeout)
-        the_socket.connect(address)
-
-        # handshake
-        send_handshake(the_socket, infohash)
-        packet = the_socket.recv(4096)
-
-        # handshake error
-        if not check_handshake(packet, infohash):
-            return
-
-        # ext handshake
-        send_ext_handshake(the_socket)
-        packet = the_socket.recv(4096)
-
-        # get ut_metadata and metadata_size
-        ut_metadata, metadata_size = get_ut_metadata(packet), get_metadata_size(packet)
-
-        # request each piece of metadata
-        for piece in range(int(math.ceil(metadata_size/(16.0*1024)))):
-            request_metadata(the_socket, ut_metadata, piece)
-            packet = recvall(the_socket, timeout)   # the_socket.recv(1024*17)
-            metadata.append(packet[packet.index("ee")+2:])
-            if '6:pieces' in packet:
-                break
-
-    except socket.timeout:
-        pass
-        # TODO: Maybe need NAT Traversa
-    except Exception, e:
-        logger.error(e)
-
-    finally:
-        the_socket.close()
-        metadata = "".join(metadata)
-        if metadata.startswith('d'):
-            metadata_queue.put((infohash, address, metadata, time()-start_time))
-
 
 class btclient(Thread):
 
@@ -161,15 +116,79 @@ class btclient(Thread):
         Thread.__init__(self)
         self.infohash_queue = infohash_queue
         self.metadata_queue = Queue()
+        self.dowloaded = set()
         self.pool = GreenPool()
 
     def run(self):
+        while True:
             if self.infohash_queue.empty():
-                sleep(5)
+                sleep(3)
             else:
                 infohash, address= self.infohash_queue.get()
-                self.pool.spawn_n(download_metadata, address, infohash, self.metadata_queue)
-                sleep(1)
+                self.pool.spawn_n(self.download_metadata, address, infohash, self.metadata_queue)
 
     def metadata_queue(self):
         return self.metadata_queue
+
+    def download_metadata(self, address, infohash, metadata_queue, timeout=5):
+        metadata = []
+        start_time = time()
+        if infohash in self.dowloaded:
+            return
+        try:
+            the_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # the_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # the_socket.bind(('0.0.0.0', 9000))
+            the_socket.settimeout(timeout)
+            the_socket.connect(address)
+
+            # handshake
+            send_handshake(the_socket, infohash)
+            packet = the_socket.recv(4096)
+
+            # handshake error
+            if not check_handshake(packet, infohash):
+                return
+
+            # ext handshake
+            send_ext_handshake(the_socket)
+            packet = the_socket.recv(4096)
+
+            # get ut_metadata and metadata_size
+            ut_metadata, metadata_size = get_ut_metadata(packet), get_metadata_size(packet)
+
+            # request each piece of metadata
+            for piece in range(int(math.ceil(metadata_size/(16.0*1024)))):
+                if infohash in self.dowloaded:
+                    break
+                request_metadata(the_socket, ut_metadata, piece)
+                packet = recvall(the_socket, timeout)   # the_socket.recv(1024*17)
+                metadata.append(packet[packet.index("ee")+2:])
+                if '6:pieces' in packet:
+                    break
+
+        except socket.timeout:
+            logger.debug('Connect timeout to %s:%d' % address)
+            # TODO: Maybe need NAT Traversa
+        except socket.error as error:
+            errno, err_msg = error
+            if errno == 10052:
+                logger.debug('Network dropped connection on reset(10052) %s:%d' % address)
+            elif errno == 10061:
+                logger.debug('Connection refused(10061) %s:%d' % address)
+            else:
+                logger.error(err_msg)
+        except Exception:
+            pass
+        finally:
+            the_socket.close()
+            metadata = "".join(metadata)
+            if metadata.startswith('d') and '6:pieces' in metadata:
+                metadata = metadata[:metadata.index('6:pieces')] + 'e'
+                try:
+                    d_metadata = bdecode(metadata)
+                except Exception as e:
+                    logger.error(str(e) + 'metadata: ' + metadata)
+                else:
+                    self.dowloaded.add(infohash)
+                    metadata_queue.put((infohash, address, d_metadata, time()-start_time))
