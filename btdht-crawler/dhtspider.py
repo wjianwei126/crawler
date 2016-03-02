@@ -5,10 +5,14 @@ from eventlet import sleep
 from random import randint
 from struct import unpack
 from socket import inet_ntoa
-from threading import Thread
-from collections import deque
 from bencode import bencode, bdecode
-import time
+from threading import Thread
+from Queue import Queue
+
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 BOOTSTRAP_NODES = (
     ("router.bittorrent.com", 6881),
@@ -27,64 +31,32 @@ class KNode(object):
         self.port = port
 
 
-class DHTClient(object):
+class DHTSpider(Thread):
 
-    def __init__(self, max_node_qsize):
+    def __init__(self, bind_ip, bind_port, max_node_qsize):
+        Thread.__init__(self)
         self.max_node_qsize = max_node_qsize
-        self.nid = self.random_chrs(20)
+        self.nid = self.random_chars(20)
         self.nodes = eventlet.queue.LightQueue(maxsize=max_node_qsize)
-        self.message_queue = eventlet.queue.LifoQueue()
+        self.message_queue = eventlet.queue.LightQueue()
         self.ips = set()
-        self.ufd = None
-        self._pool_client = eventlet.GreenPool()
+        self.infohash_queue = Queue()
+        self.bind_ip = bind_ip
+        self.bind_port = bind_port
 
-    @staticmethod
-    def random_chrs(length):
-        return "".join(chr(randint(0, 255)) for _ in xrange(length))
-
-    @staticmethod
-    def get_neighbor(target, nid, end=10):
-        return target[:end] + nid[end:]
-
-    @staticmethod
-    def decode_nodes(nodes):
-        n = []
-        length = len(nodes)
-        if (length % 26) != 0:
-            return n
-
-        for i in range(0, length, 26):
-            nid = nodes[i:i+20]
-            ip = inet_ntoa(nodes[i+20:i+24])
-            port = unpack("!H", nodes[i+24:i+26])[0]
-            n.append((nid, ip, port))
-
-        return n
-
-    def send_krpc(self, msg, address):
-        self.message_queue.put((msg,address))
-
-    def send_find_node(self, address, nid=None):
-        nid = self.get_neighbor(nid, self.nid) if nid else self.nid
-        tid = self.random_chrs(TID_LENGTH)
-        msg = {
-            "t": tid,
-            "y": "q",
-            "q": "find_node",
-            "a": {
-                "id": nid,
-                "target": self.random_chrs(20)
-            }
+        self.process_request_actions = {
+            "ping": self.on_ping_request,
+            "find_node": self.on_find_node_request,
+            "get_peers": self.on_get_peers_request,
+            "announce_peer": self.on_announce_peer_request,
         }
-        self.send_krpc(msg, address)
 
-    def join_DHT(self):
-        for address in BOOTSTRAP_NODES:
-            self.send_find_node(address)
+        self.ufd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.ufd.bind((self.bind_ip, self.bind_port))
+        self.pool = eventlet.GreenPool()
 
-    def re_join_DHT(self):
-        if self.nodes.empty():
-            self.join_DHT()
+    def infohash_queue(self):
+        return self.infohash_queue
 
     def auto_send_find_node(self):
         wait = 1.0 / self.max_node_qsize
@@ -93,45 +65,25 @@ class DHTClient(object):
                 node = self.nodes.get(timeout=1)
                 self.send_find_node((node.ip, node.port), node.nid)
             except eventlet.queue.Empty:
-                sleep(3)
-                self.re_join_DHT()
+                sleep(3)    # wait for new node in.
+                self.re_join_dht()
             except Exception as e:
-                print 'auto_send_find_node', e
-            sleep(wait)
+                logger.error(e)
+        sleep(wait)
 
-    def process_find_node_response(self, msg, address):
-        nodes = self.decode_nodes(msg["r"]["nodes"])
-        for node in nodes:
-            (nid, ip, port) = node
-            if len(nid) != 20: continue
-            if ip == self.bind_ip: continue
-            if port < 1 or port > 65535: continue
-            n = KNode(nid, ip, port)
-            self.nodes.put(n)
-            if len(self.ips) < 10000:
-                self.ips.add(ip)
-                print len(self.ips), self.nodes.qsize(), ip, port
-
-
-class DHTServer(DHTClient):
-
-    def __init__(self, master, bind_ip, bind_port, max_node_qsize):
-        DHTClient.__init__(self, max_node_qsize)
-
-        self.master = master
-        self.bind_ip = bind_ip
-        self.bind_port = bind_port
-
-        self.process_request_actions = {
-            #"ping": self.on_ping_request,
-            "find_node": self.on_find_node_request,
-            "get_peers": self.on_get_peers_request,
-            "announce_peer": self.on_announce_peer_request,
+    def send_find_node(self, address, nid=None):
+        nid = self.get_neighbor(nid, self.nid) if nid else self.nid
+        tid = self.random_chars(TID_LENGTH)
+        msg = {
+            "t": tid,
+            "y": "q",
+            "q": "find_node",
+            "a": {
+                "id": nid,
+                "target": self.random_chars(20)
+            }
         }
-
-        self.ufd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        self.ufd.bind((self.bind_ip, self.bind_port))
-        self._pool_server = eventlet.GreenPool()
+        self.send_krpc(msg, address)
 
     def response(self):
         while True:
@@ -142,26 +94,33 @@ class DHTServer(DHTClient):
                     msg = bdecode(data)
                     self.on_message(msg, address)
             except Exception as e:
-                print 'DHTServer run', e
+                logger.error(e)
 
-    def send_queue(self):
+    def send_krpc(self, msg, address):
+        self.message_queue.put((bencode(msg), address))
+
+    def send_message_queue(self):
         while True:
-            msg, addr = self.message_queue.get()
-            self.ufd.sendto(bencode(msg), addr)
+            msg, address = self.message_queue.get()
+            self.ufd.sendto(msg, address)
+
+    def re_join_dht(self):
+        if not self.nodes.empty():
+            return
+        for address in BOOTSTRAP_NODES:
+            self.send_find_node(address)
 
     def run(self):
-        self.re_join_DHT()
-        self._pool_server.spawn_n(self.auto_send_find_node)
-        self._pool_server.spawn_n(self.response)
-        self._pool_server.spawn_n(self.send_queue)
-
-        self._pool_server.waitall()
-
+        self.re_join_dht()
+        self.pool.spawn_n(self.auto_send_find_node)
+        self.pool.spawn_n(self.response)
+        self.pool.spawn_n(self.send_message_queue)
+        self.pool.waitall()
 
     def on_message(self, msg, address):
         try:
             if msg["y"] == "r":
-                if msg["r"].has_key("nodes"):
+                if "nodes" in msg['r']:
                     self.process_find_node_response(msg, address)
             elif msg["y"] == "q":
                 try:
@@ -170,6 +129,22 @@ class DHTServer(DHTClient):
                     self.play_dead(msg, address)
         except KeyError:
             pass
+
+    def process_find_node_response(self, msg, address):
+        nodes = self.decode_nodes(msg["r"]["nodes"])
+        for node in nodes:
+            (nid, ip, port) = node
+            if len(nid) != 20:
+                continue
+            if ip == self.bind_ip:
+                continue
+            if port < 1 or port > 65535:
+                continue
+            n = KNode(nid, ip, port)
+            self.nodes.put(n)
+            if len(self.ips) < 10000:
+                self.ips.add(ip)
+                logger.debug('ips: %d, nodes: %d' % (len(self.ips), self.nodes.qsize()))
 
     def on_ping_request(self, msg, address):
         msg = {
@@ -194,15 +169,15 @@ class DHTServer(DHTClient):
 
     def on_get_peers_request(self, msg, address):
         try:
-            infohash = msg["a"]["info_hash"]
+            info_hash = msg["a"]["info_hash"]
             tid = msg["t"]
             nid = msg["a"]["id"]
-            token = infohash[:TOKEN_LENGTH]
+            token = info_hash[:TOKEN_LENGTH]
             msg = {
                 "t": tid,
                 "y": "r",
                 "r": {
-                    "id": self.get_neighbor(infohash, self.nid),
+                    "id": self.get_neighbor(info_hash, nid),
                     "nodes": "",
                     "token": token
                 }
@@ -219,15 +194,15 @@ class DHTServer(DHTClient):
             tid = msg["t"]
 
             if infohash[:TOKEN_LENGTH] == token:
-                if msg["a"].has_key("implied_port") and msg["a"]["implied_port"] != 0:
+                if "implied_port" in msg['a'] and msg["a"]["implied_port"] != 0:
                     port = address[1]
                 else:
                     port = msg["a"]["port"]
                     if port < 1 or port > 65535:
                         return
-                self.master.log(infohash, (address[0], port))
+                self.infohash_queue.put((infohash, (address[0], port)))
         except Exception as e:
-            print 'on_announce', e
+            logging.error(e)
         finally:
             self.ok(msg, address)
 
@@ -258,13 +233,29 @@ class DHTServer(DHTClient):
         except KeyError:
             pass
 
+    @staticmethod
+    def random_chars(length):
+        return "".join(chr(randint(0, 255)) for _ in xrange(length))
 
-class Master(object):
+    @staticmethod
+    def get_neighbor(target, nid, end=10):
+        return target[:end] + nid[end:]
 
-    def log(self, infohash, address=None):
-        print "%s from %s:%s" % (
-            infohash.encode("hex"), address[0], address[1]
-        )
+    @staticmethod
+    def decode_nodes(nodes):
+        n = []
+        length = len(nodes)
+        if (length % 26) != 0:
+            return n
+
+        for i in range(0, length, 26):
+            nid = nodes[i:i+20]
+            ip = inet_ntoa(nodes[i+20:i+24])
+            port = unpack("!H", nodes[i+24:i+26])[0]
+            n.append((nid, ip, port))
+
+        return n
+
 
 
 

@@ -1,35 +1,47 @@
 # encoding: utf-8
 
+import eventlet
 from eventlet.green import socket
+from eventlet import sleep, GreenPool
 
 import math
 from struct import pack
-from time import sleep, time
+from time import time
 from random import randint
 from bencode import bencode
+from threading import Thread
+from Queue import  Queue
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 BT_PROTOCOL = "BitTorrent protocol"
 BT_MSG_ID = 20
 EXT_HANDSHAKE_ID = 0
 
-def random_chrs(length):
+
+def random_chars(length):
     return "".join(chr(randint(0, 255)) for _ in xrange(length))
+
 
 def send_packet(the_socket, msg):
     the_socket.send(msg)
+
 
 def send_message(the_socket, msg):
     msg_len = pack(">I", len(msg))
     send_packet(the_socket, msg_len + msg)
 
+
 def send_handshake(the_socket, infohash):
     bt_header = chr(len(BT_PROTOCOL)) + BT_PROTOCOL
     ext_bytes = "\x00\x00\x00\x00\x00\x10\x00\x00"
-    peer_id = random_chrs(20)
+    peer_id = random_chars(20)
     packet = bt_header + ext_bytes + infohash + peer_id
 
     send_packet(the_socket, packet)
+
 
 def check_handshake(packet, self_infohash):
     try:
@@ -50,25 +62,30 @@ def check_handshake(packet, self_infohash):
 
     return True
 
+
 def send_ext_handshake(the_socket):
     msg = chr(BT_MSG_ID) + chr(EXT_HANDSHAKE_ID) + bencode({"m":{"ut_metadata": 1}})
     send_message(the_socket, msg)
+
 
 def request_metadata(the_socket, ut_metadata, piece):
     """bep_0009"""
     msg = chr(BT_MSG_ID) + chr(ut_metadata) + bencode({"msg_type": 0, "piece": piece})
     send_message(the_socket, msg)
 
+
 def get_ut_metadata(data):
     ut_metadata = "_metadata"
     index = data.index(ut_metadata)+len(ut_metadata) + 1
     return int(data[index])
+
 
 def get_metadata_size(data):
     metadata_size = "metadata_size"
     start = data.index(metadata_size) + len(metadata_size) + 1
     data = data[start:]
     return int(data[:data.index("e")])
+
 
 def recvall(the_socket, timeout=5):
     the_socket.setblocking(0)
@@ -91,6 +108,7 @@ def recvall(the_socket, timeout=5):
             pass
     return "".join(total_data)
 
+
 def download_metadata(address, infohash, metadata_queue, timeout=5):
     metadata = []
     start_time = time()
@@ -107,7 +125,7 @@ def download_metadata(address, infohash, metadata_queue, timeout=5):
 
         # handshake error
         if not check_handshake(packet, infohash):
-            raise Exception()
+            return
 
         # ext handshake
         send_ext_handshake(the_socket)
@@ -115,24 +133,43 @@ def download_metadata(address, infohash, metadata_queue, timeout=5):
 
         # get ut_metadata and metadata_size
         ut_metadata, metadata_size = get_ut_metadata(packet), get_metadata_size(packet)
-        #print 'ut_metadata_size: ', metadata_size
 
         # request each piece of metadata
         for piece in range(int(math.ceil(metadata_size/(16.0*1024)))):
             request_metadata(the_socket, ut_metadata, piece)
-            packet = recvall(the_socket, timeout) #the_socket.recv(1024*17) #
+            packet = recvall(the_socket, timeout)   # the_socket.recv(1024*17)
             metadata.append(packet[packet.index("ee")+2:])
-
-
-        #print 'Fetched', bdecode(metadata)["name"], "size: ", len(metadata)
+            if '6:pieces' in packet:
+                break
 
     except socket.timeout:
         pass
         # TODO: Maybe need NAT Traversa
     except Exception, e:
-        print e
+        logger.error(e)
 
     finally:
         the_socket.close()
         metadata = "".join(metadata)
-        metadata_queue.put((infohash, address, metadata))
+        if metadata.startswith('d'):
+            metadata_queue.put((infohash, address, metadata, time()-start_time))
+
+
+class btclient(Thread):
+
+    def __init__(self, infohash_queue):
+        Thread.__init__(self)
+        self.infohash_queue = infohash_queue
+        self.metadata_queue = Queue()
+        self.pool = GreenPool()
+
+    def run(self):
+            if self.infohash_queue.empty():
+                sleep(5)
+            else:
+                infohash, address= self.infohash_queue.get()
+                self.pool.spawn_n(download_metadata, address, infohash, self.metadata_queue)
+                sleep(1)
+
+    def metadata_queue(self):
+        return self.metadata_queue

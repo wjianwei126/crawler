@@ -1,65 +1,55 @@
 # -*- encoding: utf-8 -*-
 
 
-from dht import DHTServer
-from bt_metadata import download_metadata
+from dhtspider import DHTSpider
+from btclient import btclient
 
 from eventlet import queue, GreenPool, sleep
 
-import json
 from bencode import bdecode
-from threading import Thread
-from Queue import Queue
+import sys
+import logging
 
-class Master(Thread):
+logger = logging.getLogger(__name__)
+dhtspider_logger = logging.getLogger('dhtspider')
+btclient_logger = logging.getLogger('btclient')
+handler = logging.StreamHandler(sys.stderr)
+handler.setLevel(logging.DEBUG)
+handler_info = logging.StreamHandler(sys.stdout)
+handler_info.setLevel(logging.INFO)
 
-    def __init__(self):
-        Thread.__init__(self)
-        self.metadata_queue = queue.LightQueue()
-        self.infohash_queue = Queue()
-        self._pool = GreenPool()
-        self.downloaded = set()
+formatter = logging.Formatter('[%(levelname)s %(created)f] (%(message)s)')
+handler.setFormatter(formatter)
+handler_info.setFormatter(formatter)
 
-    def get_torrent(self):
-        while True:
-            infohash, address, metadata = self.metadata_queue.get()
-            if metadata and len(metadata) > 0:
-                try:
-                    try:
-                        metadata = metadata[:metadata.index('6:pieces')] + 'e'
-                    except Exception:
-                        pass
-                    d_metadata = bdecode(metadata)
-                    length = ''
-                    if 'name' in d_metadata:
-                        name = d_metadata['name']
-                    if 'utf-8.name' in d_metadata:
-                        name = d_metadata['utf-8.name']
-                    if 'length' in d_metadata:
-                        length = d_metadata['length']
-                    print '\n'
-                    print 'name:', name.decode('utf8')
-                    print 'length:', d_metadata.get('length', '')
-                    print 'files:' , d_metadata.get('files', [])
-                    print 'from: %s:%d' % address
-                    print 'infohash: %s' % infohash.encode('hex')
-                    self.downloaded.add(infohash)
-                except Exception as e:
-                    print e
-                    print 'metadata:', metadata
+logger.addHandler(handler)
+dhtspider_logger.addHandler(handler)
+btclient_logger.addHandler(handler)
 
-    def run(self):
-        self._pool.spawn_n(self.get_torrent)
-        while True:
-            infohash, address = self.infohash_queue.get()
-            if infohash in self.downloaded:
-                continue
-            self._pool.spawn_n(download_metadata, address, infohash, self.metadata_queue)
-            sleep(1)
+logger.setLevel(logging.DEBUG)
+dhtspider_logger.setLevel(logging.DEBUG)
+btclient_logger.setLevel(logging.DEBUG)
 
-    def log(self, infohash, address=None):
-        # print(infohash, address)
-        self.infohash_queue.put((infohash, address))
+def get_torrent(metadata_queue):
+    while True:
+        infohash, address, metadata, spend_time = metadata_queue.get()
+        if metadata and len(metadata) > 0:
+            try:
+                if '6:pieces' in metadata:
+                    metadata = metadata[:metadata.index('6:pieces')] + 'e'
+
+                d_metadata = bdecode(metadata)
+                name = d_metadata.get('name', '') or d_metadata.get('utf-8.name', '')
+                print '\n'
+                print 'name:', name.decode('utf8')
+                print 'length:', d_metadata.get('length', '')
+                print 'files:' , d_metadata.get('files', [])
+                print 'from: %s:%d' % address
+                print 'infohash: %s' % infohash.encode('hex')
+            except Exception as e:
+                logger.error(str(e)+' metadata:'+metadata)
+
+
 
 
 # using example
@@ -67,14 +57,13 @@ if __name__ == "__main__":
 
     # print namespace.host, namespace.port
     # max_node_qsize bigger, bandwith bigger, speed higher
-    pool = GreenPool()
 
-    master = Master()
-    master.start()
-    dht = DHTServer(master, '0.0.0.0', 6881, max_node_qsize=4000)
-    pool.spawn_n(dht.run)
+    dht = DHTSpider('0.0.0.0', 6881, max_node_qsize=4000)
+    bt = btclient(dht.infohash_queue)
+    dht.start()
+    bt.start()
     try:
-        pool.waitall()
+        get_torrent(bt.metadata_queue)
     except KeyboardInterrupt:
         exit(0)
 
