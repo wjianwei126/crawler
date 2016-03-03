@@ -31,6 +31,7 @@ class Master(Thread):
 
     def __init__(self, metadata_queue):
         Thread.__init__(self)
+        self.setDaemon(True)
         self.metadata_queue = metadata_queue
         self.running = False
 
@@ -81,15 +82,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
-        print 'Stopping crawler.....'
         print 'dht is alive: %s, bt is alive: %s, master is alive: %s' % \
                         (dht.is_alive(), bt.is_alive(), master.is_alive())
-        dht.stop()
-        bt.stop()
-        master.stop()
-        dht.join()
-        bt.join()
-        master.join()
         print 'Exited, Total run time: %f(S)' % (time.time() - start_time)
         exit(0)
 

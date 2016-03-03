@@ -114,6 +114,7 @@ class btclient(Thread):
 
     def __init__(self, infohash_queue):
         Thread.__init__(self)
+        self.setDaemon(True)
         self.infohash_queue = infohash_queue
         self.metadata_queue = Queue()
         self.dowloaded = set()

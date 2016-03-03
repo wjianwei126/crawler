@@ -35,6 +35,7 @@ class DHTSpider(Thread):
 
     def __init__(self, bind_ip, bind_port, max_node_qsize):
         Thread.__init__(self)
+        self.setDaemon(True)
         self.max_node_qsize = max_node_qsize
         self.nid = self.random_chars(20)
         self.nodes = eventlet.queue.LightQueue(maxsize=max_node_qsize)
