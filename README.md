@@ -29,7 +29,7 @@ In the test environment, the crawler cost 20% cpu and 20MB memory, collects 100 
 
 
 ## Reference
-Thanks those repo provide awsome ideas and beautiful code for me.
+Thanks those repositories provide awsome ideas and beautiful code for me.
 
 - [Fuck-You-GFW/simDHT](https://github.com/Fuck-You-GFW/simDHT.git)
 - [78/ssbc](https://github.com/78/ssbc.git)

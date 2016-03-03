@@ -118,14 +118,19 @@ class btclient(Thread):
         self.metadata_queue = Queue()
         self.dowloaded = set()
         self.pool = GreenPool()
+        self.running = False
 
     def run(self):
-        while True:
+        self.running = True
+        while self.running:
             if self.infohash_queue.empty():
                 sleep(3)
             else:
                 infohash, address= self.infohash_queue.get()
                 self.pool.spawn_n(self.download_metadata, address, infohash, self.metadata_queue)
+
+    def stop(self):
+        self.running = False
 
     def metadata_queue(self):
         return self.metadata_queue

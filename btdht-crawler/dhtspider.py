@@ -54,13 +54,14 @@ class DHTSpider(Thread):
         self.ufd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self.ufd.bind((self.bind_ip, self.bind_port))
         self.pool = eventlet.GreenPool()
+        self.running = False
 
     def infohash_queue(self):
         return self.infohash_queue
 
     def auto_send_find_node(self):
         wait = 1.0 / self.max_node_qsize
-        while True:
+        while self.running:
             try:
                 node = self.nodes.get(timeout=1)
                 self.send_find_node((node.ip, node.port), node.nid)
@@ -69,7 +70,7 @@ class DHTSpider(Thread):
                 self.re_join_dht()
             except Exception as e:
                 logger.error(e)
-        #sleep(wait)
+        sleep(wait)
 
     def send_find_node(self, address, nid=None):
         nid = self.get_neighbor(nid, self.nid) if nid else self.nid
@@ -86,7 +87,7 @@ class DHTSpider(Thread):
         self.send_krpc(msg, address)
 
     def response(self):
-        while True:
+        while self.running:
             try:
                 p = self.ufd.recvfrom(65536)
             except socket.error as e:
@@ -109,7 +110,7 @@ class DHTSpider(Thread):
         self.message_queue.put((bencode(msg), address))
 
     def send_message_queue(self):
-        while True:
+        while self.running:
             msg, address = self.message_queue.get()
             self.ufd.sendto(msg, address)
 
@@ -120,10 +121,14 @@ class DHTSpider(Thread):
             self.send_find_node(address)
 
     def run(self):
+        self.running = True
         self.pool.spawn_n(self.auto_send_find_node)
         self.pool.spawn_n(self.response)
         self.pool.spawn_n(self.send_message_queue)
         self.pool.waitall()
+
+    def stop(self):
+        self.running = False
 
     def on_message(self, msg, address):
         try:
